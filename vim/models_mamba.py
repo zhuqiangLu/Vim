@@ -274,6 +274,7 @@ class VisionMamba(nn.Module):
         self.use_double_cls_token = use_double_cls_token
         self.use_middle_cls_token = use_middle_cls_token
         self.num_tokens = 1 if if_cls_token else 0
+        self.extend_factor = 4
 
         # pretrain parameters
         self.num_classes = num_classes
@@ -293,7 +294,7 @@ class VisionMamba(nn.Module):
                 # self.num_tokens = 1
             
         if if_abs_pos_embed:
-            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, self.embed_dim))
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, self.embed_dim))
             self.pos_drop = nn.Dropout(p=drop_rate)
 
         if if_rope:
@@ -383,67 +384,80 @@ class VisionMamba(nn.Module):
         x = self.patch_embed(x)
         B, M, _ = x.shape
 
-        if self.if_cls_token:
-            if self.use_double_cls_token:
-                cls_token_head = self.cls_token_head.expand(B, -1, -1)
-                cls_token_tail = self.cls_token_tail.expand(B, -1, -1)
-                token_position = [0, M + 1]
-                x = torch.cat((cls_token_head, x, cls_token_tail), dim=1)
-                M = x.shape[1]
-            else:
-                if self.use_middle_cls_token:
-                    cls_token = self.cls_token.expand(B, -1, -1)
-                    token_position = M // 2
-                    # add cls token in the middle
-                    x = torch.cat((x[:, :token_position, :], cls_token, x[:, token_position:, :]), dim=1)
-                elif if_random_cls_token_position:
-                    cls_token = self.cls_token.expand(B, -1, -1)
-                    token_position = random.randint(0, M)
-                    x = torch.cat((x[:, :token_position, :], cls_token, x[:, token_position:, :]), dim=1)
-                    print("token_position: ", token_position)
-                else:
-                    cls_token = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-                    token_position = 0
-                    x = torch.cat((cls_token, x), dim=1)
-                M = x.shape[1]
-
-        if self.if_abs_pos_embed:
-            # if new_grid_size[0] == self.patch_embed.grid_size[0] and new_grid_size[1] == self.patch_embed.grid_size[1]:
-            #     x = x + self.pos_embed
-            # else:
-            #     pos_embed = interpolate_pos_embed_online(
-            #                 self.pos_embed, self.patch_embed.grid_size, new_grid_size,0
-            #             )
-            x = x + self.pos_embed
-            x = self.pos_drop(x)
-
-        if if_random_token_rank:
-
-            # 生成随机 shuffle 索引
+        # first duplicate and shuffle sequence 
+        dup_x = rearrange(x, 'b m c -> b 1 m c').expand(1, self.extend_factor, 1, 1)
+        for i in range(self.extend_factor):
             shuffle_indices = torch.randperm(M)
+            pos_x = x + self.pos_embed
+            dup_x[:, i, :] = self.pos_drop(pos[:, shuffle_indices])
+        x = rearrange(dup_x, 'b f m c -> b (f m) c')
 
-            if isinstance(token_position, list):
-                print("original value: ", x[0, token_position[0], 0], x[0, token_position[1], 0])
-            else:
-                print("original value: ", x[0, token_position, 0])
-            print("original token_position: ", token_position)
+        # then add cls token to the end 
+        cls_token_tail = self.cls_token_tail.expand(B, -1, -1)
+        x = torch.cat((x, cls_token_tail), dim=1)
 
-            # 执行 shuffle
-            x = x[:, shuffle_indices, :]
 
-            if isinstance(token_position, list):
-                # 找到 cls token 在 shuffle 之后的新位置
-                new_token_position = [torch.where(shuffle_indices == token_position[i])[0].item() for i in range(len(token_position))]
-                token_position = new_token_position
-            else:
-                # 找到 cls token 在 shuffle 之后的新位置
-                token_position = torch.where(shuffle_indices == token_position)[0].item()
+        # if self.if_cls_token:
+        #     if self.use_double_cls_token:
+        #         cls_token_head = self.cls_token_head.expand(B, -1, -1)
+        #         cls_token_tail = self.cls_token_tail.expand(B, -1, -1)
+        #         token_position = [0, M + 1]
+        #         x = torch.cat((cls_token_head, x, cls_token_tail), dim=1)
+        #         M = x.shape[1]
+        #     else:
+        #         if self.use_middle_cls_token:
+        #             cls_token = self.cls_token.expand(B, -1, -1)
+        #             token_position = M // 2
+        #             # add cls token in the middle
+        #             x = torch.cat((x[:, :token_position, :], cls_token, x[:, token_position:, :]), dim=1)
+        #         elif if_random_cls_token_position:
+        #             cls_token = self.cls_token.expand(B, -1, -1)
+        #             token_position = random.randint(0, M)
+        #             x = torch.cat((x[:, :token_position, :], cls_token, x[:, token_position:, :]), dim=1)
+        #             print("token_position: ", token_position)
+        #         else:
+        #             cls_token = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        #             token_position = 0
+        #             x = torch.cat((cls_token, x), dim=1)
+        #         M = x.shape[1]
 
-            if isinstance(token_position, list):
-                print("new value: ", x[0, token_position[0], 0], x[0, token_position[1], 0])
-            else:
-                print("new value: ", x[0, token_position, 0])
-            print("new token_position: ", token_position)
+        # if self.if_abs_pos_embed:
+        #     # if new_grid_size[0] == self.patch_embed.grid_size[0] and new_grid_size[1] == self.patch_embed.grid_size[1]:
+        #     #     x = x + self.pos_embed
+        #     # else:
+        #     #     pos_embed = interpolate_pos_embed_online(
+        #     #                 self.pos_embed, self.patch_embed.grid_size, new_grid_size,0
+        #     #             )
+        #     x = x + self.pos_embed
+        #     x = self.pos_drop(x)
+
+        # if if_random_token_rank:
+
+        #     # 生成随机 shuffle 索引
+        #     shuffle_indices = torch.randperm(M)
+
+        #     if isinstance(token_position, list):
+        #         print("original value: ", x[0, token_position[0], 0], x[0, token_position[1], 0])
+        #     else:
+        #         print("original value: ", x[0, token_position, 0])
+        #     print("original token_position: ", token_position)
+
+        #     # 执行 shuffle
+        #     x = x[:, shuffle_indices, :]
+
+        #     if isinstance(token_position, list):
+        #         # 找到 cls token 在 shuffle 之后的新位置
+        #         new_token_position = [torch.where(shuffle_indices == token_position[i])[0].item() for i in range(len(token_position))]
+        #         token_position = new_token_position
+        #     else:
+        #         # 找到 cls token 在 shuffle 之后的新位置
+        #         token_position = torch.where(shuffle_indices == token_position)[0].item()
+
+        #     if isinstance(token_position, list):
+        #         print("new value: ", x[0, token_position[0], 0], x[0, token_position[1], 0])
+        #     else:
+        #         print("new value: ", x[0, token_position, 0])
+        #     print("new token_position: ", token_position)
 
 
 
@@ -516,15 +530,16 @@ class VisionMamba(nn.Module):
 
         # return only cls token if it exists
         if self.if_cls_token:
-            if self.use_double_cls_token:
-                return (hidden_states[:, token_position[0], :] + hidden_states[:, token_position[1], :]) / 2
-            else:
-                if self.use_middle_cls_token:
-                    return hidden_states[:, token_position, :]
-                elif if_random_cls_token_position:
-                    return hidden_states[:, token_position, :]
-                else:
-                    return hidden_states[:, token_position, :]
+            return hidden_states[:, -1].unsqueeze(dim=1)
+            # if self.use_double_cls_token:
+            #     return (hidden_states[:, token_position[0], :] + hidden_states[:, token_position[1], :]) / 2
+            # else:
+            #     if self.use_middle_cls_token:
+            #         return hidden_states[:, token_position, :]
+            #     elif if_random_cls_token_position:
+            #         return hidden_states[:, token_position, :]
+            #     else:
+            #         return hidden_states[:, token_position, :]
 
         if self.final_pool_type == 'none':
             return hidden_states[:, -1, :]
@@ -545,6 +560,20 @@ class VisionMamba(nn.Module):
         if self.final_pool_type == 'max':
             x = x.max(dim=1)[0]
         return x
+
+@register_model
+def vim_tiny_patch16_224_shuffle_mambav2_final_pool_mean_abs_pos_embed_with_midclstok_div2(pretrained=False, **kwargs):
+    model = VisionMamba(
+        patch_size=16, embed_dim=512, depth=1, rms_norm=True, residual_in_fp32=True, fused_add_norm=True, final_pool_type='mean', if_abs_pos_embed=True, if_rope=False, if_rope_residual=False, bimamba_type="v2", if_cls_token=True, if_devide_out=True, use_middle_cls_token=True, **kwargs)
+    model.default_cfg = _cfg()
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="to.do",
+            map_location="cpu", check_hash=True
+        )
+        model.load_state_dict(checkpoint["model"])
+    return model
+
 
 
 @register_model

@@ -216,6 +216,8 @@ def get_args_parser():
     parser.set_defaults(if_random_token_rank=False)
 
     parser.add_argument('--local-rank', default=0, type=int)
+    parser.add_argument('--gpu', default=0, type=int)
+
     return parser
 
 
