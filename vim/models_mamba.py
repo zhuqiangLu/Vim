@@ -385,15 +385,15 @@ class VisionMamba(nn.Module):
         B, M, _ = x.shape
 
         # first duplicate and shuffle sequence 
-        dup_x = rearrange(x, 'b m c -> b 1 m c').expand(1, self.extend_factor, 1, 1)
+        dup_x = rearrange(x, 'b m c -> b 1 m c').repeat(1, self.extend_factor, 1, 1)
         for i in range(self.extend_factor):
             shuffle_indices = torch.randperm(M)
             pos_x = x + self.pos_embed
-            dup_x[:, i, :] = self.pos_drop(pos[:, shuffle_indices])
+            dup_x[:, i, :] = self.pos_drop(pos_x[:, shuffle_indices])
         x = rearrange(dup_x, 'b f m c -> b (f m) c')
 
         # then add cls token to the end 
-        cls_token_tail = self.cls_token_tail.expand(B, -1, -1)
+        cls_token_tail = self.cls_token.expand(B, -1, -1)
         x = torch.cat((x, cls_token_tail), dim=1)
 
 
@@ -530,7 +530,7 @@ class VisionMamba(nn.Module):
 
         # return only cls token if it exists
         if self.if_cls_token:
-            return hidden_states[:, -1].unsqueeze(dim=1)
+            return hidden_states
             # if self.use_double_cls_token:
             #     return (hidden_states[:, token_position[0], :] + hidden_states[:, token_position[1], :]) / 2
             # else:
@@ -562,9 +562,9 @@ class VisionMamba(nn.Module):
         return x
 
 @register_model
-def vim_tiny_patch16_224_shuffle_mambav2_final_pool_mean_abs_pos_embed_with_midclstok_div2(pretrained=False, **kwargs):
+def my_mamba(pretrained=False, **kwargs):
     model = VisionMamba(
-        patch_size=16, embed_dim=512, depth=1, rms_norm=True, residual_in_fp32=True, fused_add_norm=True, final_pool_type='mean', if_abs_pos_embed=True, if_rope=False, if_rope_residual=False, bimamba_type="v2", if_cls_token=True, if_devide_out=True, use_middle_cls_token=True, **kwargs)
+        patch_size=16, embed_dim=192, depth=1, rms_norm=True, residual_in_fp32=True, fused_add_norm=True, final_pool_type='mean', if_abs_pos_embed=True, if_rope=False, if_rope_residual=False, bimamba_type="v2", if_cls_token=True, if_devide_out=True, use_middle_cls_token=True, **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
         checkpoint = torch.hub.load_state_dict_from_url(
